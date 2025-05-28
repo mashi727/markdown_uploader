@@ -122,8 +122,24 @@ class NotionBlockConverter:
         return i + 3
     
     def _process_inline_math(self, txt: str, math_matches: List, blocks: List[Dict]):
-        """インライン数式を処理する"""
+        """インライン数式を処理する（テキストの順序を保持）"""
+        last_end = 0
+        
+        # テキストと数式を文書の順序通りに処理
         for match in math_matches:
+            start, end = match.span()
+            
+            # 数式の前のテキストを先に追加（空文字列は除く）
+            if start > last_end:
+                prefix_text = txt[last_end:start].strip()
+                if prefix_text:  # 空文字列チェックを追加
+                    blocks.append({
+                        'object': 'block',
+                        'type': 'paragraph',
+                        'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': prefix_text}}]}
+                    })
+            
+            # 数式ブロックを追加（テキストの後に配置）
             math_content = match.group(1)
             blocks.append({
                 'object': 'block',
@@ -131,28 +147,19 @@ class NotionBlockConverter:
                 'equation': {'expression': math_content}
             })
             logging.info(f"インライン数式ブロックを追加しました: {math_content[:30]}...")
+            
+            # 次のループのために終了位置を更新
+            last_end = end
         
-        # 数式以外のテキストも処理
-        last_end = 0
-        for match in math_matches:
-            start, end = match.span()
-            if start > last_end:
-                prefix_text = txt[last_end:start]
+        # 最後の数式後のテキストを追加（空文字列は除く）
+        if last_end < len(txt):
+            suffix_text = txt[last_end:].strip()
+            if suffix_text:  # 空文字列チェックを追加
                 blocks.append({
                     'object': 'block',
                     'type': 'paragraph',
-                    'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': prefix_text}}]}
+                    'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': suffix_text}}]}
                 })
-            last_end = end
-        
-        # 最後の数式後のテキスト
-        if last_end < len(txt):
-            suffix_text = txt[last_end:]
-            blocks.append({
-                'object': 'block',
-                'type': 'paragraph',
-                'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': suffix_text}}]}
-            })
     
     def _process_paragraph_images(self, token, md_dir: Path, blocks: List[Dict]) -> bool:
         """段落内の画像を処理する"""
