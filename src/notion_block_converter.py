@@ -230,17 +230,18 @@ class NotionBlockConverter:
         # 言語情報を取得
         lang = self._determine_code_language(info_str)
         
-        # 数式ブロックかどうかをチェック
-        if lang in ('math', 'latex', 'tex') or self.parser.is_latex_code_block(lang, code):
+        # 数式ブロックかどうかを優先的にチェック
+        if self._is_math_block(lang, code):
+            # 数式ブロックとして処理
             blocks.append({
                 'object': 'block',
                 'type': 'equation',
-                'equation': {'expression': code}
+                'equation': {'expression': code.strip()}  # 前後の空白を除去
             })
-            logging.info(f"数式ブロックを追加しました: {code[:30]}...")
+            logging.info(f"数式ブロックを追加しました: {code.strip()[:30]}...")
             return i + 1
         
-        # コードが長い場合は分割
+        # 通常のコードブロックとして処理
         if len(code) > self.config.max_rich_text_length:
             self._process_long_code_block(code, lang, blocks)
         else:
@@ -254,6 +255,78 @@ class NotionBlockConverter:
             })
         
         return i + 1
+    
+    def _is_math_block(self, lang: str, content: str) -> bool:
+        """ブロックが数式かどうかを判定する（より厳密な判定）"""
+        # 明示的な数学言語指定
+        if lang in ('math', 'latex', 'tex'):
+            return True
+        
+        # 内容による判定（より厳密に）
+        content_stripped = content.strip()
+        
+        # LaTeX数式の典型的なパターンをチェック
+        math_indicators = [
+            # 環境
+            r'\\begin{',
+            r'\\end{',
+            # 数式コマンド
+            r'\\frac{',
+            r'\\sum',
+            r'\\int',
+            r'\\lim',
+            r'\\prod',
+            # 演算子
+            r'\\nabla',
+            r'\\partial',
+            # ギリシャ文字（よく使われるもの）
+            r'\\alpha',
+            r'\\beta',
+            r'\\gamma',
+            r'\\delta',
+            r'\\epsilon',
+            r'\\theta',
+            r'\\lambda',
+            r'\\mu',
+            r'\\pi',
+            r'\\sigma',
+            r'\\phi',
+            r'\\omega',
+            # 括弧
+            r'\\left',
+            r'\\right',
+            # フォント
+            r'\\mathbf',
+            r'\\mathcal',
+            r'\\mathrm',
+            # 演算記号
+            r'\\cdot',
+            r'\\times',
+            r'\\div',
+            # 集合記号
+            r'\\cap',
+            r'\\cup',
+            r'\\subset',
+            r'\\in',
+            # 論理記号
+            r'\\forall',
+            r'\\exists',
+            r'\\Rightarrow'
+        ]
+        
+        # 複数の数式パターンが含まれている場合により確実
+        pattern_count = sum(1 for pattern in math_indicators if pattern in content_stripped)
+        
+        # 2つ以上の数式パターンがある、または明確な数式環境がある場合
+        if pattern_count >= 2:
+            return True
+        
+        # 数式環境の場合は1つでも確実に数式
+        env_patterns = [r'\\begin{', r'\\frac{', r'\\sum', r'\\int', r'\\lim']
+        if any(pattern in content_stripped for pattern in env_patterns):
+            return True
+        
+        return False
     
     def _determine_code_language(self, info_str: str) -> str:
         """コードブロックの言語を決定する"""
