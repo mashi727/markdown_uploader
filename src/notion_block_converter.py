@@ -31,16 +31,23 @@ class NotionBlockConverter:
         # Obsidianスタイルのリンクを変換
         md_text = re.sub(r"\[\[(.+?)\]\]", r"\1", md_text)
         
+        # 事前にブロック数式を検出・変換（Markdownパーサーより前に処理）
+        md_text = self._preprocess_block_math(md_text)
+        
         tokens = self.md.parse(md_text)
         blocks = []
         i = 0
         
-        # インライン数式のパターン
+        # インライン数式のパターン（行内の$$...$$）
         inline_math_pattern = r'\$\$(.*?)\$\$'
         
         while i < len(tokens):
             token = tokens[i]
             t = token.type
+            
+            # デバッグ: 各トークンの情報を出力
+            if logging.getLogger().level <= logging.DEBUG:
+                logging.debug(f"Token {i}: type={t}, content={getattr(token, 'content', '')[:50]}...")
             
             if t == 'heading_open':
                 i = self._process_heading(tokens, i, blocks)
@@ -54,6 +61,41 @@ class NotionBlockConverter:
                 i = self._process_code_block(tokens, i, blocks)
             elif t == 'blockquote_open':
                 i = self._process_blockquote(tokens, i, blocks)
+            elif token.type == 'html_block':
+                logging.info(f"html_blockトークンを検出: {token.content[:100]}...")
+                if '__BLOCK_MATH_START__' in token.content:
+                    # 事前処理されたブロック数式を復元
+                    # HTMLコメントから数式内容を抽出
+                    lines = token.content.split('\n')
+                    math_content = ''
+                    in_math = False
+                    
+                    for line in lines:
+                        if '__BLOCK_MATH_START__' in line:
+                            in_math = True
+                            continue
+                        elif '__BLOCK_MATH_END__' in line:
+                            in_math = False
+                            continue
+                        elif in_math:
+                            math_content += line + '\n'
+                    
+                    math_content = math_content.strip()
+                    if math_content:
+                        blocks.append({
+                            'object': 'block',
+                            'type': 'equation',
+                            'equation': {'expression': math_content}
+                        })
+                        logging.info(f"ブロック数式を追加しました: {math_content[:50]}...")
+                else:
+                    # 通常のHTMLブロックとして処理
+                    blocks.append({
+                        'object': 'block',
+                        'type': 'paragraph',
+                        'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': token.content}}]}
+                    })
+                i += 1
             elif t == 'hr':
                 blocks.append({'object': 'block', 'type': 'divider', 'divider': {}})
                 i += 1
@@ -61,6 +103,27 @@ class NotionBlockConverter:
                 i += 1
         
         return self._validate_blocks(blocks)
+    
+    def _preprocess_block_math(self, md_text: str) -> str:
+        """ブロック数式を事前処理してMarkdownパーサーが正しく処理できるようにする"""
+        # 複数行のブロック数式パターン（改行を含む$$...$$）
+        block_math_pattern = r'\$\$(.*?)\$\$'
+        
+        def replace_block_math(match):
+            math_content = match.group(1).strip()
+            logging.info(f"ブロック数式を検出しました: {math_content[:50]}...")
+            # HTMLコメントとしてマークし、後で復元（確実にhtml_blockになるように）
+            return f'\n<!-- __BLOCK_MATH_START__ -->\n{math_content}\n<!-- __BLOCK_MATH_END__ -->\n'
+        
+        # re.DOTALLで改行を含む$$...$$をマッチ
+        original_count = len(re.findall(block_math_pattern, md_text, flags=re.DOTALL))
+        processed_text = re.sub(block_math_pattern, replace_block_math, md_text, flags=re.DOTALL)
+        
+        logging.info(f"事前処理でブロック数式を{original_count}個検出しました")
+        if original_count > 0:
+            logging.debug(f"事前処理後のテキスト:\n{processed_text[:500]}...")
+        
+        return processed_text
     
     def _process_heading(self, tokens, i: int, blocks: List[Dict]) -> int:
         """見出しを処理する"""
@@ -107,10 +170,10 @@ class NotionBlockConverter:
         if not txt:
             return i + 3
         
-        # インライン数式をチェック
-        math_matches = list(re.finditer(inline_math_pattern, txt))
-        if math_matches:
-            self._process_inline_math(txt, math_matches, blocks)
+        # インライン数式をチェック（行内の$$...$$）
+        inline_math_matches = list(re.finditer(inline_math_pattern, txt))
+        if inline_math_matches:
+            self._process_inline_math(txt, inline_math_matches, blocks)
         else:
             # 画像を含むかどうかをチェック
             has_image = self._process_paragraph_images(tokens[i+1], md_dir, blocks)
@@ -256,6 +319,29 @@ class NotionBlockConverter:
         
         return i + 1
     
+    def _determine_code_language(self, info_str: str) -> str:
+        """コードブロックの言語を決定する"""
+        if not info_str:
+            return 'plain text'
+        
+        raw_lang = info_str.split()[0].lower()
+        
+        language_mapping = {
+            'sh': 'bash',
+            'shell': 'bash',
+            'js': 'javascript',
+            'javascript': 'javascript',
+            'math': 'math',
+            'latex': 'latex',
+            'tex': 'tex',
+            'puml': 'plain text',
+            'plantuml': 'plain text',
+            'paul': 'plain text',
+            'gnuplot': 'plain text'
+        }
+        
+        return language_mapping.get(raw_lang, raw_lang)
+    
     def _is_math_block(self, lang: str, content: str) -> bool:
         """ブロックが数式かどうかを判定する（より厳密な判定）"""
         # 明示的な数学言語指定
@@ -327,29 +413,6 @@ class NotionBlockConverter:
             return True
         
         return False
-    
-    def _determine_code_language(self, info_str: str) -> str:
-        """コードブロックの言語を決定する"""
-        if not info_str:
-            return 'plain text'
-        
-        raw_lang = info_str.split()[0].lower()
-        
-        language_mapping = {
-            'sh': 'bash',
-            'shell': 'bash',
-            'js': 'javascript',
-            'javascript': 'javascript',
-            'math': 'math',
-            'latex': 'latex',
-            'tex': 'tex',
-            'puml': 'plain text',
-            'plantuml': 'plain text',
-            'paul': 'plain text',
-            'gnuplot': 'plain text'
-        }
-        
-        return language_mapping.get(raw_lang, raw_lang)
     
     def _process_long_code_block(self, code: str, lang: str, blocks: List[Dict]):
         """長いコードブロックを分割して処理する"""
