@@ -331,29 +331,87 @@ class NotionBlockConverter:
             'javascript': 'javascript',
             'math': 'math',
             'latex': 'latex',
-            'tex': 'tex',
+            'tex': 'latex',  # texもlatexとして扱う
             'puml': 'plain text',
             'plantuml': 'plain text',
             'paul': 'plain text',
-            'gnuplot': 'plain text'
+            'gnuplot': 'plain text',
+            'python': 'python',
+            'py': 'python',
+            'java': 'java',
+            'c': 'c',
+            'cpp': 'cpp',
+            'c++': 'cpp',
+            'csharp': 'csharp',
+            'cs': 'csharp',
+            'ruby': 'ruby',
+            'rb': 'ruby',
+            'go': 'go',
+            'rust': 'rust',
+            'rs': 'rust',
+            'html': 'html',
+            'css': 'css',
+            'xml': 'xml',
+            'json': 'json',
+            'yaml': 'yaml',
+            'yml': 'yaml',
+            'sql': 'sql',
+            'r': 'r',
+            'matlab': 'matlab',
+            'swift': 'swift',
+            'kotlin': 'kotlin',
+            'kt': 'kotlin',
+            'php': 'php',
+            'perl': 'perl',
+            'scala': 'scala',
+            'haskell': 'haskell',
+            'hs': 'haskell',
+            'typescript': 'typescript',
+            'ts': 'typescript'
         }
         
         return language_mapping.get(raw_lang, raw_lang)
     
     def _is_math_block(self, lang: str, content: str) -> bool:
         """ブロックが数式かどうかを判定する（より厳密な判定）"""
-        # 明示的な数学言語指定
-        if lang in ('math', 'latex', 'tex'):
+        # LaTeX文書の場合は数式ブロックとして扱わない
+        content_stripped = content.strip()
+        
+        # LaTeX文書のパターンをチェック
+        latex_document_indicators = [
+            r'\\documentclass',
+            r'\\usepackage',
+            r'\\begin{document}',
+            r'\\end{document}',
+            r'\\title{',
+            r'\\author{',
+            r'\\maketitle',
+            r'\\section{',
+            r'\\subsection{',
+            r'\\chapter{',
+            r'\\tableofcontents',
+            r'\\bibliography'
+        ]
+        
+        # LaTeX文書の場合はコードブロックとして扱う
+        if any(indicator in content_stripped for indicator in latex_document_indicators):
+            return False
+        
+        # 明示的な数学言語指定（ただし、文書構造でない場合のみ）
+        if lang == 'math':
             return True
         
         # 内容による判定（より厳密に）
-        content_stripped = content.strip()
-        
         # LaTeX数式の典型的なパターンをチェック
         math_indicators = [
-            # 環境
-            r'\\begin{',
-            r'\\end{',
+            # 数式環境
+            r'\\begin{equation',
+            r'\\begin{align',
+            r'\\begin{gather',
+            r'\\begin{matrix',
+            r'\\begin{pmatrix',
+            r'\\begin{bmatrix',
+            r'\\begin{cases',
             # 数式コマンド
             r'\\frac{',
             r'\\sum',
@@ -401,13 +459,20 @@ class NotionBlockConverter:
         # 複数の数式パターンが含まれている場合により確実
         pattern_count = sum(1 for pattern in math_indicators if pattern in content_stripped)
         
-        # 2つ以上の数式パターンがある、または明確な数式環境がある場合
-        if pattern_count >= 2:
+        # 3つ以上の数式パターンがある場合（より厳密に）
+        if pattern_count >= 3:
             return True
         
-        # 数式環境の場合は1つでも確実に数式
-        env_patterns = [r'\\begin{', r'\\frac{', r'\\sum', r'\\int', r'\\lim']
-        if any(pattern in content_stripped for pattern in env_patterns):
+        # 明確な数式環境の場合
+        math_env_patterns = [
+            r'\\begin{equation',
+            r'\\begin{align',
+            r'\\begin{gather',
+            r'\\begin{matrix',
+            r'\\begin{pmatrix',
+            r'\\begin{bmatrix'
+        ]
+        if any(pattern in content_stripped for pattern in math_env_patterns):
             return True
         
         return False
