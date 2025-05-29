@@ -54,6 +54,182 @@ $$
 \end{align}
 $$
 
+
+# 圏論の数式表記サンプル
+
+## 1. 基本的な圏の定義
+
+圏 $\mathcal{C}$ は以下で構成される：
+
+- 対象の集まり $\text{Ob}(\mathcal{C})$
+- 射の集まり $\text{Mor}(\mathcal{C})$
+- 合成演算 $\circ : \text{Mor}(B, C) \times \text{Mor}(A, B) \to \text{Mor}(A, C)$
+
+## 2. 射の表記
+
+インライン数式での射の表記：$f: A \to B$ や $g: B \to C$
+
+## 3. 可換図式
+
+基本的な可換図式：
+
+$$
+\begin{array}{ccc}
+A & \xrightarrow{f} & B \\
+\downarrow{g} & \searrow{h} & \downarrow{k} \\
+C & \xrightarrow{l} & D
+\end{array}
+$$
+
+## 4. 関手
+
+関手 $F: \mathcal{C} \to \mathcal{D}$ は以下を満たす：
+
+$$
+\begin{align}
+F(f \circ g) &= F(f) \circ F(g) \\
+F(\text{id}_A) &= \text{id}_{F(A)}
+\end{align}
+$$
+
+## 5. 自然変換
+
+自然変換 $\eta: F \Rightarrow G$ の可換性条件：
+
+$$
+G(f) \circ \eta_A = \eta_B \circ F(f)
+$$
+
+## 6. 随伴関手
+
+随伴 $F \dashv G$ は以下の自然同型を与える：
+
+$$
+\text{Hom}_{\mathcal{D}}(F(A), B) \cong \text{Hom}_{\mathcal{C}}(A, G(B))
+$$
+
+## 7. 極限と余極限
+
+極限の普遍性：任意の錐 $(A, \{f_i: A \to X_i\})$ に対して、唯一の射 $u: A \to \lim X_i$ が存在し、以下が可換：
+
+$$
+\pi_i \circ u = f_i
+$$
+
+## 8. モナド
+
+モナド $(T, \mu, \eta)$ の公理：
+
+$$
+\begin{align}
+\mu \circ T\mu &= \mu \circ \mu T \\
+\mu \circ T\eta &= \mu \circ \eta T = \text{id}_T
+\end{align}
+$$
+
+## 9. 米田の補題
+
+米田埋め込み：
+
+$$
+\mathcal{C}(-, A) : \mathcal{C}^{\text{op}} \to \mathbf{Set}
+$$
+
+米田の補題の主張：
+
+$$
+\text{Nat}(\mathcal{C}(-, A), F) \cong F(A)
+$$
+
+## 10. カン拡張
+
+左カン拡張の普遍性を表す図式：
+
+$$
+\begin{array}{ccc}
+\mathcal{A} & \xrightarrow{K} & \mathcal{B} \\
+& \searrow{F} & \downarrow{\text{Lan}_K F} \\
+& & \mathcal{C}
+\end{array}
+$$
+
+## 11. 2-圏
+
+2-圏における2-射（自然変換）：
+
+$$
+\alpha: f \Rrightarrow g : A \to B
+$$
+
+垂直合成と水平合成：
+
+$$
+\begin{align}
+\text{垂直合成}: & \quad \beta \cdot \alpha: f \Rrightarrow h \\
+\text{水平合成}: & \quad \alpha * \gamma: f \circ k \Rrightarrow g \circ l
+\end{align}
+$$
+
+## 12. トポス
+
+トポスにおける部分対象分類子：
+
+$$
+\chi_f: A \to \Omega
+$$
+
+ここで、引き戻し図式：
+
+$$
+\begin{array}{ccc}
+U & \rightarrow & 1 \\
+\downarrow & \square & \downarrow{\text{true}} \\
+A & \xrightarrow{\chi_f} & \Omega
+\end{array}
+$$
+
+## 13. 高次圏論
+
+$n$-圏における$k$-射の合成：
+
+$$
+\circ_k: \text{Hom}_{k}(f, g) \times \text{Hom}_{k}(g, h) \to \text{Hom}_{k}(f, h)
+$$
+
+## LaTeXコードブロックの例
+
+数式環境を含むLaTeXコード：
+
+```latex
+\documentclass{article}
+\usepackage{amsmath}
+\usepackage{tikz-cd}
+
+\begin{document}
+\begin{tikzcd}
+A \arrow[r, "f"] \arrow[d, "g"'] & B \arrow[d, "h"] \\
+C \arrow[r, "k"'] & D
+\end{tikzcd}
+\end{document}
+```
+
+## 複雑な可換図式
+
+エイレンベルグ・ムーア圏の構成：
+
+$$
+\begin{array}{ccccc}
+\mathcal{C}^T & \xrightarrow{U^T} & \mathcal{C} \\
+\downarrow{V} & \nearrow{K} & \downarrow{F} \\
+\mathcal{D} & \xrightarrow{G} & \mathcal{E}
+\end{array}
+$$
+
+ここで $U^T$ は忘却関手、$F^T$ は自由関手である。
+
+
+
+
 LaTeXコードブロック:
 ```latex
 \documentclass{article}
