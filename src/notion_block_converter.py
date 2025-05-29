@@ -31,23 +31,64 @@ class NotionBlockConverter:
         # Obsidianスタイルのリンクを変換
         md_text = re.sub(r"\[\[(.+?)\]\]", r"\1", md_text)
         
-        # 事前にブロック数式を検出・変換（Markdownパーサーより前に処理）
-        md_text = self._preprocess_block_math(md_text)
-        
-        tokens = self.md.parse(md_text)
+        # 直接的にブロック数式を検出して変換
         blocks = []
+        self._process_text_with_block_math(md_text, md_dir, blocks)
+        
+        return self._validate_blocks(blocks)
+    
+    def _process_text_with_block_math(self, md_text: str, md_dir: Path, blocks: List[Dict]):
+        """テキストをブロック数式を考慮して処理する"""
+        # ブロック数式のパターン（改行を含む）
+        block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
+        
+        # 最初に全てのブロック数式を見つける
+        block_math_matches = list(re.finditer(block_math_pattern, md_text, re.DOTALL))
+        
+        if not block_math_matches:
+            # ブロック数式がない場合は通常の処理
+            self._process_regular_markdown(md_text, md_dir, blocks)
+            return
+        
+        last_end = 0
+        
+        for match in block_math_matches:
+            start, end = match.span()
+            
+            # 数式の前のテキストを処理
+            if start > last_end:
+                before_text = md_text[last_end:start].strip()
+                if before_text:
+                    self._process_regular_markdown(before_text, md_dir, blocks)
+            
+            # ブロック数式を処理
+            math_content = match.group(1).strip()
+            blocks.append({
+                'object': 'block',
+                'type': 'equation',
+                'equation': {'expression': math_content}
+            })
+            logging.info(f"ブロック数式を追加しました: {math_content[:50]}...")
+            
+            last_end = end
+        
+        # 最後の数式の後のテキストを処理
+        if last_end < len(md_text):
+            after_text = md_text[last_end:].strip()
+            if after_text:
+                self._process_regular_markdown(after_text, md_dir, blocks)
+    
+    def _process_regular_markdown(self, md_text: str, md_dir: Path, blocks: List[Dict]):
+        """通常のMarkdownテキストを処理する"""
+        tokens = self.md.parse(md_text)
         i = 0
         
-        # インライン数式のパターン（行内の$$...$$）
-        inline_math_pattern = r'\$\$(.*?)\$\$'
+        # インライン数式のパターン（行内の$...$）
+        inline_math_pattern = r'\$([^$\n]+)\$'
         
         while i < len(tokens):
             token = tokens[i]
             t = token.type
-            
-            # デバッグ: 各トークンの情報を出力
-            if logging.getLogger().level <= logging.DEBUG:
-                logging.debug(f"Token {i}: type={t}, content={getattr(token, 'content', '')[:50]}...")
             
             if t == 'heading_open':
                 i = self._process_heading(tokens, i, blocks)
@@ -61,69 +102,11 @@ class NotionBlockConverter:
                 i = self._process_code_block(tokens, i, blocks)
             elif t == 'blockquote_open':
                 i = self._process_blockquote(tokens, i, blocks)
-            elif token.type == 'html_block':
-                logging.info(f"html_blockトークンを検出: {token.content[:100]}...")
-                if '__BLOCK_MATH_START__' in token.content:
-                    # 事前処理されたブロック数式を復元
-                    # HTMLコメントから数式内容を抽出
-                    lines = token.content.split('\n')
-                    math_content = ''
-                    in_math = False
-                    
-                    for line in lines:
-                        if '__BLOCK_MATH_START__' in line:
-                            in_math = True
-                            continue
-                        elif '__BLOCK_MATH_END__' in line:
-                            in_math = False
-                            continue
-                        elif in_math:
-                            math_content += line + '\n'
-                    
-                    math_content = math_content.strip()
-                    if math_content:
-                        blocks.append({
-                            'object': 'block',
-                            'type': 'equation',
-                            'equation': {'expression': math_content}
-                        })
-                        logging.info(f"ブロック数式を追加しました: {math_content[:50]}...")
-                else:
-                    # 通常のHTMLブロックとして処理
-                    blocks.append({
-                        'object': 'block',
-                        'type': 'paragraph',
-                        'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': token.content}}]}
-                    })
-                i += 1
             elif t == 'hr':
                 blocks.append({'object': 'block', 'type': 'divider', 'divider': {}})
                 i += 1
             else:
                 i += 1
-        
-        return self._validate_blocks(blocks)
-    
-    def _preprocess_block_math(self, md_text: str) -> str:
-        """ブロック数式を事前処理してMarkdownパーサーが正しく処理できるようにする"""
-        # 複数行のブロック数式パターン（改行を含む$$...$$）
-        block_math_pattern = r'\$\$(.*?)\$\$'
-        
-        def replace_block_math(match):
-            math_content = match.group(1).strip()
-            logging.info(f"ブロック数式を検出しました: {math_content[:50]}...")
-            # HTMLコメントとしてマークし、後で復元（確実にhtml_blockになるように）
-            return f'\n<!-- __BLOCK_MATH_START__ -->\n{math_content}\n<!-- __BLOCK_MATH_END__ -->\n'
-        
-        # re.DOTALLで改行を含む$$...$$をマッチ
-        original_count = len(re.findall(block_math_pattern, md_text, flags=re.DOTALL))
-        processed_text = re.sub(block_math_pattern, replace_block_math, md_text, flags=re.DOTALL)
-        
-        logging.info(f"事前処理でブロック数式を{original_count}個検出しました")
-        if original_count > 0:
-            logging.debug(f"事前処理後のテキスト:\n{processed_text[:500]}...")
-        
-        return processed_text
     
     def _process_heading(self, tokens, i: int, blocks: List[Dict]) -> int:
         """見出しを処理する"""
@@ -170,7 +153,22 @@ class NotionBlockConverter:
         if not txt:
             return i + 3
         
-        # インライン数式をチェック（行内の$$...$$）
+        # ブロック数式のパターンをチェック（$$...$$）
+        block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
+        block_math_match = re.search(block_math_pattern, txt, re.DOTALL)
+        
+        if block_math_match:
+            # ブロック数式が含まれている場合、適切に処理
+            math_content = block_math_match.group(1).strip()
+            blocks.append({
+                'object': 'block',
+                'type': 'equation',
+                'equation': {'expression': math_content}
+            })
+            logging.info(f"段落内のブロック数式を追加しました: {math_content[:30]}...")
+            return i + 3
+        
+        # インライン数式をチェック（行内の$...$）
         inline_math_matches = list(re.finditer(inline_math_pattern, txt))
         if inline_math_matches:
             self._process_inline_math(txt, inline_math_matches, blocks)
