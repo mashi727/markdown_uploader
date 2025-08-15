@@ -28,9 +28,7 @@ class MarkdownParser:
         'QUESTION': '❓',
         'FAILURE': '❌',
         'BUG': '🐛',
-        'FAQ': '❔',
-        'RESULT': '✨',  # 結果用の新しいタイプ
-        'PROMPT': '💬'   # プロンプト用の新しいタイプ
+        'FAQ': '❔'
     }
     
     @staticmethod
@@ -87,64 +85,58 @@ class MarkdownParser:
         return metadata
     
     @staticmethod
-    def preprocess_remote_claude_format(text: str) -> str:
-        """remote-claude形式のマークダウンを前処理する"""
-        lines = text.split('\n')
-        processed_lines = []
-        in_result_section = False
-        result_section_started = False
+    def detect_callouts(text: str) -> List[Dict[str, Any]]:
+        """Obsidianスタイルのコールアウトを検出する"""
+        callouts = []
         
+        # コールアウトのパターン: > [!TYPE] タイトル（オプション）
+        # 複数行に対応
+        callout_pattern = r'^>\s*\[!([A-Z]+)\](?:\s+(.+?))?\s*$'
+        
+        lines = text.split('\n')
         i = 0
+        
         while i < len(lines):
             line = lines[i]
+            match = re.match(callout_pattern, line)
             
-            # 実行記録セクションの処理
-            if re.match(r'^#{2,}\s+実行記録:', line):
-                processed_lines.append(re.sub(r'^#{2,}\s+実行記録:', '## 📊 実行記録:', line))
+            if match:
+                callout_type = match.group(1)
+                title = match.group(2) or callout_type.title()
+                content_lines = []
+                
+                # 次の行から引用が続く限り内容を収集
                 i += 1
-                continue
-            
-            # プロンプトセクションの処理
-            if re.match(r'^###\s+プロンプト', line):
-                processed_lines.append('### 💬 プロンプト')
+                while i < len(lines) and lines[i].startswith('>'):
+                    # > を除去して内容を追加
+                    content_line = lines[i][1:].lstrip()
+                    content_lines.append(content_line)
+                    i += 1
+                
+                callouts.append({
+                    'type': callout_type,
+                    'title': title,
+                    'content': '\n'.join(content_lines).strip(),
+                    'start_line': i - len(content_lines) - 1,
+                    'end_line': i - 1
+                })
+            else:
                 i += 1
-                continue
-            
-            # 結果セクションの開始を検出
-            if re.match(r'^###\s+結果', line):
-                processed_lines.append('### ✨ 結果')
-                # 結果セクションをコールアウト形式で開始
-                processed_lines.append('> [!RESULT] 実行結果')
-                in_result_section = True
-                result_section_started = True
-                i += 1
-                continue
-            
-            # 結果セクション内の処理
-            if in_result_section:
-                # 次のセクションの開始を検出（## や --- など）
-                if re.match(r'^#{1,3}\s+', line) or line.strip() == '---':
-                    in_result_section = False
-                    processed_lines.append(line)
-                else:
-                    # 結果内容を引用ブロック化
-                    if line.strip():  # 空行でない場合
-                        # すでに引用記号がある場合はそのまま、ない場合は追加
-                        if not line.startswith('>'):
-                            processed_lines.append(f'> {line}')
-                        else:
-                            processed_lines.append(line)
-                    else:
-                        # 空行も引用ブロック内で維持
-                        processed_lines.append('>')
-                i += 1
-                continue
-            
-            # その他の行はそのまま追加
-            processed_lines.append(line)
-            i += 1
         
-        return '\n'.join(processed_lines)
+        return callouts
+    
+    @staticmethod
+    def process_callout_to_text(callout: Dict[str, Any]) -> str:
+        """コールアウトを通常のテキストに変換する"""
+        callout_type = callout['type']
+        emoji = MarkdownParser.CALLOUT_TYPES.get(callout_type, '📌')
+        title = callout['title']
+        content = callout['content']
+        
+        # Notion用のフォーマットに変換
+        # エモジ付きの見出しと内容
+        formatted = f"{emoji} **{title}**\n{content}"
+        return formatted
     
     @staticmethod
     def extract_markdown_links(text: str) -> List[Dict[str, Any]]:
@@ -220,3 +212,13 @@ class MarkdownParser:
     def is_video_link(url: str, video_domains: tuple) -> bool:
         """URLが動画リンクかどうかを判定する"""
         return bool(url) and any(domain in url for domain in video_domains)
+    
+    @staticmethod
+    def preprocess_remote_claude_format(text: str) -> str:
+        """remote-claude形式のマークダウンを前処理する"""
+        # セクション区切り線を見やすくする
+        text = re.sub(r'^#{2,}\s+実行記録:', '## 📊 実行記録:', text, flags=re.MULTILINE)
+        text = re.sub(r'^###\s+プロンプト', '### 💬 プロンプト', text, flags=re.MULTILINE)
+        text = re.sub(r'^###\s+結果', '### ✨ 結果', text, flags=re.MULTILINE)
+        
+        return text

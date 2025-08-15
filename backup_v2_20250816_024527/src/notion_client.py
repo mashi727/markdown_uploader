@@ -27,12 +27,13 @@ class NotionClientWrapper:
         """Notionページを作成する"""
         parent = {'database_id': self.config.database_id}
         if parent_id:
+            # 子ページを作成する場合
             parent = {'page_id': parent_id}
         
         # ページプロパティの設定
         page_props = self._build_page_properties(title, abstract)
         
-        # ブロックの前処理
+        # ブロックの前処理（calloutブロックの互換性処理）
         processed_blocks = self._preprocess_blocks(blocks)
         
         try:
@@ -45,7 +46,7 @@ class NotionClientWrapper:
         except APIResponseError as err:
             logging.error(f"Notion API エラー: {err}")
             
-            # エラー処理とフォールバック
+            # calloutブロックがサポートされていない場合のフォールバック
             if 'callout' in str(err):
                 logging.info("calloutブロックをquoteブロックに変換して再試行します")
                 fallback_blocks = self._convert_callouts_to_quotes(processed_blocks)
@@ -71,6 +72,7 @@ class NotionClientWrapper:
         }
         
         if abstract:
+            # 長い要約は切り詰める
             max_abstract_length = 1000
             if len(abstract) > max_abstract_length:
                 abstract = abstract[:max_abstract_length-3] + '...'
@@ -80,34 +82,17 @@ class NotionClientWrapper:
         return page_props
     
     def _preprocess_blocks(self, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """ブロックの前処理を行う（トグル内のchildrenも処理）"""
+        """ブロックの前処理を行う"""
         processed = []
         
         for block in blocks:
-            processed_block = self._process_single_block(block)
-            if processed_block:
-                processed.append(processed_block)
+            # ブロックタイプのバリデーション
+            if self._is_valid_block(block):
+                processed.append(block)
+            else:
+                logging.warning(f"無効なブロックをスキップ: {block.get('type', 'unknown')}")
         
         return processed
-    
-    def _process_single_block(self, block: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """単一ブロックを処理（再帰的にchildrenも処理）"""
-        if not self._is_valid_block(block):
-            logging.warning(f"無効なブロックをスキップ: {block.get('type', 'unknown')}")
-            return None
-        
-        # トグルブロックの場合、childrenも処理
-        if block.get('type') == 'toggle' and 'toggle' in block:
-            toggle_data = block['toggle']
-            if 'children' in toggle_data:
-                processed_children = []
-                for child in toggle_data['children']:
-                    processed_child = self._process_single_block(child)
-                    if processed_child:
-                        processed_children.append(processed_child)
-                toggle_data['children'] = processed_children
-        
-        return block
     
     def _is_valid_block(self, block: Dict[str, Any]) -> bool:
         """ブロックが有効かどうかを確認する"""
@@ -131,13 +116,16 @@ class NotionClientWrapper:
         
         for block in blocks:
             if block.get('type') == 'callout':
+                # calloutをquoteに変換
                 callout_data = block.get('callout', {})
                 rich_text = callout_data.get('rich_text', [])
                 
+                # アイコンがある場合はテキストの先頭に追加
                 icon = callout_data.get('icon', {})
                 emoji = icon.get('emoji', '')
                 
                 if emoji and rich_text:
+                    # 絵文字をテキストの先頭に追加
                     first_text = rich_text[0]
                     if first_text.get('type') == 'text':
                         original_content = first_text.get('text', {}).get('content', '')
@@ -150,12 +138,6 @@ class NotionClientWrapper:
                 })
                 
                 logging.info(f"calloutブロックをquoteブロックに変換しました")
-            elif block.get('type') == 'toggle':
-                # トグルブロック内のcalloutも変換
-                toggle_data = block.get('toggle', {})
-                if 'children' in toggle_data:
-                    toggle_data['children'] = self._convert_callouts_to_quotes(toggle_data['children'])
-                converted.append(block)
             else:
                 converted.append(block)
         

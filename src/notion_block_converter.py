@@ -5,7 +5,7 @@ MarkdownからNotionブロックへの変換機能モジュール
 import re
 import logging
 from pathlib import Path
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Set, Optional
 
 from markdown_it import MarkdownIt
 
@@ -28,530 +28,756 @@ class NotionBlockConverter:
     
     def convert_markdown_to_blocks(self, md_text: str, md_dir: Path) -> List[Dict[str, Any]]:
         """MarkdownテキストをNotionブロックに変換する"""
-        # Obsidianスタイルのリンクを変換
-        md_text = re.sub(r"\[\[(.+?)\]\]", r"\1", md_text)
+        # remote-claude形式かどうかを判定
+        is_remote_claude = self._is_remote_claude_format(md_text)
         
-        # 直接的にブロック数式を検出して変換
+        if is_remote_claude:
+            # remote-claude形式の特別な処理
+            logging.info("remote-claude形式を検出しました")
+            return self._convert_remote_claude_format(md_text, md_dir)
+        else:
+            # 通常のMarkdown処理
+            logging.info("通常のMarkdown形式として処理します")
+            # Obsidianスタイルのリンクを変換
+            md_text = re.sub(r"\[\[(.+?)\]\]", r"\1", md_text)
+            
+            # コールアウトを処理
+            md_text = self._process_callouts(md_text)
+            
+            # 直接的にブロック数式を検出して変換
+            blocks = []
+            self._process_text_with_block_math(md_text, md_dir, blocks)
+            
+            return self._validate_blocks(blocks)
+    
+    def _is_remote_claude_format(self, md_text: str) -> bool:
+        """remote-claude形式かどうかを判定"""
+        # より厳密な判定パターン
+        patterns = [
+            r'## 実行記録:\s*\d{4}-\d{2}-\d{2}',
+            r'\*\*接続先:\*\*',
+            r'\*\*プロンプトファイル:\*\*',
+            r'### プロンプト',
+            r'### 結果'
+        ]
+        
+        # 少なくとも3つ以上のパターンがマッチすればremote-claude形式と判定
+        matches = sum(1 for pattern in patterns if re.search(pattern, md_text))
+        return matches >= 3
+    
+    def _convert_remote_claude_format(self, md_text: str, md_dir: Path) -> List[Dict[str, Any]]:
+        """remote-claude形式を特別に処理"""
         blocks = []
-        self._process_text_with_block_math(md_text, md_dir, blocks)
+        
+        # セクションを解析
+        sections = self._parse_remote_claude_sections(md_text)
+        
+        logging.info(f"解析されたセクション: {sections.keys()}")
+        
+        # 実行記録ヘッダー
+        if sections.get('execution_header'):
+            blocks.append({
+                'object': 'block',
+                'type': 'heading_2',
+                'heading_2': {
+                    'rich_text': [{'type': 'text', 'text': {'content': f"📊 {sections['execution_header']}"}}]
+                }
+            })
+        
+        # メタデータ
+        if sections.get('metadata'):
+            for meta_line in sections['metadata']:
+                blocks.append({
+                    'object': 'block',
+                    'type': 'bulleted_list_item',
+                    'bulleted_list_item': {
+                        'rich_text': [{'type': 'text', 'text': {'content': meta_line}}],
+                        'color': 'gray_background'
+                    }
+                })
+        
+        # プロンプトセクション
+        if sections.get('prompt_title'):
+            blocks.append({
+                'object': 'block',
+                'type': 'heading_3',
+                'heading_3': {
+                    'rich_text': [{'type': 'text', 'text': {'content': '💬 プロンプト'}}]
+                }
+            })
+            
+            # プロンプト内容を引用ブロックとして追加
+            if sections.get('prompt_content'):
+                prompt_text = sections['prompt_content'].strip()
+                logging.info(f"プロンプト内容: {prompt_text[:100]}...")
+                
+                # プロンプトをコールアウトとして表示
+                blocks.append({
+                    'object': 'block',
+                    'type': 'callout',
+                    'callout': {
+                        'rich_text': [{'type': 'text', 'text': {'content': prompt_text}}],
+                        'icon': {'emoji': '💬'},
+                        'color': 'blue_background'
+                    }
+                })
+        
+        # 結果セクション（トグル内に配置）
+        if sections.get('result_content'):
+            result_content = sections['result_content'].strip()
+            logging.info(f"結果内容の長さ: {len(result_content)} 文字")
+            
+            # 結果のヘッダー
+            blocks.append({
+                'object': 'block',
+                'type': 'heading_3',
+                'heading_3': {
+                    'rich_text': [{'type': 'text', 'text': {'content': '✨ 結果'}}]
+                }
+            })
+            
+            # 結果ブロックを作成
+            result_children = self._create_result_blocks(result_content, md_dir)
+            
+            logging.info(f"結果ブロック数: {len(result_children)}")
+            
+            # トグルブロックを作成し、子要素を含める
+            toggle_block = {
+                'object': 'block',
+                'type': 'toggle',
+                'toggle': {
+                    'rich_text': [{'type': 'text', 'text': {'content': '📖 実行結果を表示'}}],
+                    'color': 'purple_background'
+                }
+            }
+            
+            # 子要素がある場合のみchildrenを追加
+            if result_children:
+                toggle_block['toggle']['children'] = result_children
+            
+            blocks.append(toggle_block)
+        else:
+            logging.warning("結果セクションが見つかりませんでした")
         
         return self._validate_blocks(blocks)
     
-    def _process_text_with_block_math(self, md_text: str, md_dir: Path, blocks: List[Dict]):
-        """テキストをブロック数式を考慮して処理する"""
-        # ブロック数式のパターン（改行を含む）
-        block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
+    def _parse_remote_claude_sections(self, md_text: str) -> Dict[str, Any]:
+        """remote-claude形式のセクションを解析（改善版）"""
+        sections = {}
+        lines = md_text.split('\n')
         
-        # 最初に全てのブロック数式を見つける
-        block_math_matches = list(re.finditer(block_math_pattern, md_text, re.DOTALL))
+        current_section = None
+        prompt_lines = []
+        result_lines = []
+        metadata_lines = []
         
-        if not block_math_matches:
-            # ブロック数式がない場合は通常の処理
-            self._process_regular_markdown(md_text, md_dir, blocks)
-            return
+        # セクションの境界を見つける
+        prompt_start = -1
+        result_start = -1
         
-        last_end = 0
-        
-        for match in block_math_matches:
-            start, end = match.span()
+        for i, line in enumerate(lines):
+            # 実行記録のヘッダー
+            if match := re.match(r'^##\s*実行記録:\s*(.+)$', line):
+                sections['execution_header'] = f"実行記録: {match.group(1)}"
+                current_section = 'metadata'
+                continue
             
-            # 数式の前のテキストを処理
-            if start > last_end:
-                before_text = md_text[last_end:start].strip()
-                if before_text:
-                    self._process_regular_markdown(before_text, md_dir, blocks)
+            # メタデータ（接続先、プロンプトファイル）
+            if current_section == 'metadata' and '**' in line:
+                # **を除去してクリーンな形式に
+                clean_line = re.sub(r'\*\*([^:]+):\*\*\s*(.+)', r'\1: \2', line)
+                if clean_line != line:  # 変換が成功した場合のみ追加
+                    metadata_lines.append(clean_line)
+                continue
             
-            # ブロック数式を処理
-            math_content = match.group(1).strip()
-            blocks.append({
-                'object': 'block',
-                'type': 'equation',
-                'equation': {'expression': math_content}
-            })
-            logging.info(f"ブロック数式を追加しました: {math_content[:50]}...")
+            # プロンプトセクションの開始
+            if re.match(r'^###\s+プロンプト', line):
+                sections['prompt_title'] = 'プロンプト'
+                prompt_start = i + 1
+                current_section = 'prompt'
+                continue
             
-            last_end = end
+            # 結果セクションの開始
+            if re.match(r'^###\s+結果', line):
+                sections['result_title'] = '結果'
+                result_start = i + 1
+                current_section = 'result'
+                # プロンプトセクションの終了
+                if prompt_start >= 0 and result_start > prompt_start:
+                    prompt_lines = lines[prompt_start:i]
+                continue
         
-        # 最後の数式の後のテキストを処理
-        if last_end < len(md_text):
-            after_text = md_text[last_end:].strip()
-            if after_text:
-                self._process_regular_markdown(after_text, md_dir, blocks)
+        # プロンプト内容の処理
+        if prompt_lines:
+            # > [!NOTE] などのコールアウトと引用記号を除去
+            clean_prompt_lines = []
+            skip_next = False
+            for line in prompt_lines:
+                if line.startswith('> [!'):
+                    skip_next = True
+                    continue
+                if skip_next and line.startswith('> **'):
+                    skip_next = False
+                    continue
+                # 引用記号を除去
+                if line.startswith('>'):
+                    clean_line = line[1:].lstrip()
+                    if clean_line or line == '>':  # 空行も保持
+                        clean_prompt_lines.append(clean_line)
+                elif line.strip() and not line.startswith('#'):
+                    clean_prompt_lines.append(line)
+            
+            sections['prompt_content'] = '\n'.join(clean_prompt_lines).strip()
+        
+        # 結果内容の処理
+        if result_start >= 0:
+            # 結果の終わりを見つける（次のセクションまたはファイルの終わり）
+            result_end = len(lines)
+            for i in range(result_start, len(lines)):
+                # 区切り線（フロントマター）を検出
+                if lines[i].startswith('---') and i > result_start:
+                    result_end = i
+                    break
+                # 新しい実行記録セクションを検出（別のremote-claude実行）
+                if re.match(r'^##\s+実行記録:', lines[i]) and i > result_start:
+                    result_end = i
+                    break
+                # 注意: 結果内の ## は含める（Claude の応答の一部なので）
+            
+            result_lines = lines[result_start:result_end]
+            
+            # 結果内容をクリーンアップ
+            clean_result_lines = []
+            for line in result_lines:
+                # 引用記号がある場合は除去
+                if line.startswith('>'):
+                    clean_line = line[1:].lstrip()
+                    clean_result_lines.append(clean_line)
+                else:
+                    clean_result_lines.append(line)
+            
+            sections['result_content'] = '\n'.join(clean_result_lines).strip()
+            
+            logging.info(f"結果セクション: {result_start}行目から{result_end}行目まで")
+        
+        # セクションを設定
+        if metadata_lines:
+            sections['metadata'] = metadata_lines
+        
+        # デバッグ情報
+        logging.info(f"プロンプト内容の長さ: {len(sections.get('prompt_content', ''))} 文字")
+        logging.info(f"結果内容の長さ: {len(sections.get('result_content', ''))} 文字")
+        
+        return sections
     
-    def _process_regular_markdown(self, md_text: str, md_dir: Path, blocks: List[Dict]):
-        """通常のMarkdownテキストを処理する"""
-        tokens = self.md.parse(md_text)
+    def _create_result_blocks(self, result_content: str, md_dir: Path) -> List[Dict[str, Any]]:
+        """結果内容からNotionブロックを作成（トグル内用）"""
+        if not result_content:
+            logging.warning("結果内容が空です")
+            return []
+        
+        blocks = []
+        
+        logging.info(f"結果内容をMarkdownとして処理: {result_content[:100]}...")
+        
+        # 結果の内容を処理
+        # マークダウンの各要素を適切に変換
+        tokens = self.md.parse(result_content)
+        
+        logging.info(f"トークン数: {len(tokens)}")
+        
         i = 0
-        
-        # インライン数式のパターン（行内の$...$）
-        inline_math_pattern = r'\$([^$\n]+)\$'
-        
         while i < len(tokens):
             token = tokens[i]
             t = token.type
             
+            logging.debug(f"トークン {i}: {t}")
+            
             if t == 'heading_open':
-                i = self._process_heading(tokens, i, blocks)
+                i = self._process_heading_for_toggle(tokens, i, blocks)
             elif t in ('bullet_list_open', 'ordered_list_open'):
-                i = self._process_list(tokens, i, blocks)
+                i = self._process_list_for_toggle(tokens, i, blocks)
             elif t == 'paragraph_open':
-                i = self._process_paragraph(tokens, i, blocks, md_dir, inline_math_pattern)
-            elif t == 'inline':
-                i = self._process_inline(tokens, i, blocks, md_dir)
+                i = self._process_paragraph_for_toggle(tokens, i, blocks, md_dir)
             elif t == 'fence':
                 i = self._process_code_block(tokens, i, blocks)
             elif t == 'blockquote_open':
-                i = self._process_blockquote(tokens, i, blocks)
+                i = self._process_blockquote_for_toggle(tokens, i, blocks)
             elif t == 'hr':
                 blocks.append({'object': 'block', 'type': 'divider', 'divider': {}})
                 i += 1
+            elif t == 'inline':
+                # インライン要素の処理
+                txt = token.content.strip()
+                if txt:
+                    blocks.append({
+                        'object': 'block',
+                        'type': 'paragraph',
+                        'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': txt}}]}
+                    })
+                i += 1
             else:
                 i += 1
+        
+        logging.info(f"生成されたブロック数: {len(blocks)}")
+        
+        return blocks
     
-    def _process_heading(self, tokens, i: int, blocks: List[Dict]) -> int:
-        """見出しを処理する"""
+    def _process_heading_for_toggle(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """トグル内の見出しを処理"""
         token = tokens[i]
         lvl = int(token.tag[1])
         content = tokens[i+1].content
-        blk = f"heading_{lvl}" if lvl <= 3 else 'paragraph'
+        
+        # トグル内では見出しレベルを調整しない（元のレベルを維持）
+        blk = f"heading_{min(lvl, 3)}"  # 最大h3まで
+        
         blocks.append({
             'object': 'block',
             'type': blk,
             blk: {'rich_text': [{'type': 'text', 'text': {'content': content}}]}
         })
+        
+        logging.debug(f"見出しを追加: {content}")
+        
         return i + 3
     
-    def _process_list(self, tokens, i: int, blocks: List[Dict]) -> int:
-        """リストを処理する"""
+    def _process_list_for_toggle(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """トグル内のリストを処理"""
         list_type = 'numbered_list_item' if tokens[i].type == 'ordered_list_open' else 'bulleted_list_item'
         i += 1
         
-        while tokens[i].type not in ('bullet_list_close', 'ordered_list_close'):
+        while i < len(tokens) and tokens[i].type not in ('bullet_list_close', 'ordered_list_close'):
             if tokens[i].type == 'list_item_open':
-                txt = tokens[i+2].content
-                
-                # リンクを見出し付きブックマークとして処理
-                links_processed = self._process_markdown_links_as_labeled_bookmarks(txt, blocks)
-                
-                # リンクがない場合はリストアイテムとして追加
-                if not links_processed:
+                # リストアイテムの内容を取得
+                content_idx = i + 2
+                if content_idx < len(tokens):
+                    txt = tokens[content_idx].content
+                    
                     blocks.append({
                         'object': 'block',
                         'type': list_type,
                         list_type: {'rich_text': [{'type': 'text', 'text': {'content': txt}}]}
                     })
+                    
+                    logging.debug(f"リストアイテムを追加: {txt[:50]}...")
                 
+                # 次のリストアイテムへ
                 i += 5
-                continue
-            i += 1
+            else:
+                i += 1
         
         return i + 1
     
-    def _process_paragraph(self, tokens, i: int, blocks: List[Dict], md_dir: Path, inline_math_pattern: str) -> int:
-        """段落を処理する"""
-        txt = tokens[i+1].content.strip()
-        if not txt:
-            return i + 3
-        
-        # ブロック数式のパターンをチェック（$$...$$）
-        block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
-        block_math_match = re.search(block_math_pattern, txt, re.DOTALL)
-        
-        if block_math_match:
-            # ブロック数式が含まれている場合、適切に処理
-            math_content = block_math_match.group(1).strip()
-            blocks.append({
-                'object': 'block',
-                'type': 'equation',
-                'equation': {'expression': math_content}
-            })
-            logging.info(f"段落内のブロック数式を追加しました: {math_content[:30]}...")
-            return i + 3
-        
-        # インライン数式をチェック（行内の$...$）
-        inline_math_matches = list(re.finditer(inline_math_pattern, txt))
-        if inline_math_matches:
-            self._process_inline_math(txt, inline_math_matches, blocks)
-        else:
-            # 画像を含むかどうかをチェック
-            has_image = self._process_paragraph_images(tokens[i+1], md_dir, blocks)
-            
-            # 画像を含まない場合のみリンクとして処理
-            if not has_image:
-                self._process_paragraph_text(txt, blocks)
-        
-        return i + 3
-    
-    def _process_inline_math(self, txt: str, math_matches: List, blocks: List[Dict]):
-        """インライン数式を処理する（テキストの順序を保持）"""
-        last_end = 0
-        
-        # テキストと数式を文書の順序通りに処理
-        for match in math_matches:
-            start, end = match.span()
-            
-            # 数式の前のテキストを先に追加（空文字列は除く）
-            if start > last_end:
-                prefix_text = txt[last_end:start].strip()
-                if prefix_text:  # 空文字列チェックを追加
+    def _process_paragraph_for_toggle(self, tokens, i: int, blocks: List[Dict], md_dir: Path) -> int:
+        """トグル内の段落を処理"""
+        if i + 1 < len(tokens):
+            txt = tokens[i+1].content.strip()
+            if txt:
+                # インライン数式のパターン
+                inline_math_pattern = r'\$([^$\n]+)\$'
+                
+                # ブロック数式のパターンをチェック
+                block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
+                block_math_match = re.search(block_math_pattern, txt, re.DOTALL)
+                
+                if block_math_match:
+                    math_content = block_math_match.group(1).strip()
                     blocks.append({
                         'object': 'block',
-                        'type': 'paragraph',
-                        'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': prefix_text}}]}
+                        'type': 'equation',
+                        'equation': {'expression': math_content}
                     })
-            
-            # 数式ブロックを追加（テキストの後に配置）
-            math_content = match.group(1)
+                    logging.debug(f"数式を追加: {math_content[:30]}...")
+                else:
+                    # インライン数式をチェック
+                    inline_math_matches = list(re.finditer(inline_math_pattern, txt))
+                    if inline_math_matches:
+                        self._process_inline_math(txt, inline_math_matches, blocks)
+                    else:
+                        # 通常のテキスト処理
+                        blocks.append({
+                            'object': 'block',
+                            'type': 'paragraph',
+                            'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': txt}}]}
+                        })
+                        logging.debug(f"段落を追加: {txt[:50]}...")
+        
+        return i + 2
+    
+    def _process_blockquote_for_toggle(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """トグル内の引用を処理"""
+        i += 1
+        content_lines = []
+        
+        while i < len(tokens) and tokens[i].type != 'blockquote_close':
+            if tokens[i].type == 'paragraph_open':
+                if i + 1 < len(tokens):
+                    content_lines.append(tokens[i+1].content)
+                i += 2
+            i += 1
+        
+        if content_lines:
+            content = '\n'.join(content_lines)
             blocks.append({
                 'object': 'block',
-                'type': 'equation',
-                'equation': {'expression': math_content}
+                'type': 'quote',
+                'quote': {'rich_text': [{'type': 'text', 'text': {'content': content}}]}
             })
-            logging.info(f"インライン数式ブロックを追加しました: {math_content[:30]}...")
-            
-            # 次のループのために終了位置を更新
-            last_end = end
-        
-        # 最後の数式後のテキストを追加（空文字列は除く）
-        if last_end < len(txt):
-            suffix_text = txt[last_end:].strip()
-            if suffix_text:  # 空文字列チェックを追加
-                blocks.append({
-                    'object': 'block',
-                    'type': 'paragraph',
-                    'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': suffix_text}}]}
-                })
-    
-    def _process_paragraph_images(self, token, md_dir: Path, blocks: List[Dict]) -> bool:
-        """段落内の画像を処理する"""
-        has_image = False
-        for child in token.children or []:
-            if child.type == 'image':
-                has_image = True
-                raw = child.attrs.get('src', '') if child.attrs else ''
-                if raw not in self.processed_images:
-                    self.processed_images.add(raw)
-                    src = raw if raw.startswith(('http://', 'https://')) else self.image_uploader.get_image_url((md_dir/raw).resolve())
-                    if src:
-                        blocks.append({
-                            'object': 'block',
-                            'type': 'image',
-                            'image': {'type': 'external', 'external': {'url': src}}
-                        })
-                        logging.info(f"画像ブロックを追加しました: src={src}")
-        return has_image
-    
-    def _process_paragraph_text(self, txt: str, blocks: List[Dict]):
-        """段落のテキストを処理する"""
-        links_processed = self._process_markdown_links_as_labeled_bookmarks(txt, blocks)
-        
-        if not links_processed:
-            text_parts = self.parser.split_long_text(txt, self.config.max_rich_text_length)
-            for part in text_parts:
-                blocks.append({
-                    'object': 'block',
-                    'type': 'paragraph',
-                    'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': part}}]}
-                })
-    
-    def _process_inline(self, tokens, i: int, blocks: List[Dict], md_dir: Path) -> int:
-        """インライン要素を処理する"""
-        token = tokens[i]
-        handled = False
-        
-        # 画像の処理
-        for child in token.children or []:
-            if child.type == 'image':
-                raw = child.attrs.get('src', '') if child.attrs else ''
-                if raw not in self.processed_images:
-                    self.processed_images.add(raw)
-                    src = raw if raw.startswith(('http://', 'https://')) else self.image_uploader.get_image_url((md_dir/raw).resolve())
-                    if src:
-                        blocks.append({
-                            'object': 'block',
-                            'type': 'image',
-                            'image': {'type': 'external', 'external': {'url': src}}
-                        })
-                        logging.info(f"画像ブロックを追加しました (inline): src={src}")
-                        handled = True
-        
-        if not handled:
-            txt = token.content.strip()
-            if txt:
-                self._process_paragraph_text(txt, blocks)
         
         return i + 1
     
     def _process_code_block(self, tokens, i: int, blocks: List[Dict]) -> int:
-        """コードブロックを処理する"""
+        """コードブロックを処理"""
         token = tokens[i]
-        code = token.content
-        info_str = token.info.strip()
+        language = token.info or 'plain text'
+        content = token.content
         
-        # 言語情報を取得
-        lang = self._determine_code_language(info_str)
+        # Notion APIで無効な言語名を変換
+        language_mapping = {
+            'text': 'plain text',
+            'txt': 'plain text',
+            'plaintext': 'plain text',
+            'sh': 'shell',
+            'bash': 'shell',
+            'zsh': 'shell',
+            'js': 'javascript',
+            'ts': 'typescript',
+            'py': 'python',
+            'rb': 'ruby',
+            'yml': 'yaml',
+            'md': 'markdown',
+            '': 'plain text'
+        }
         
-        # 数式ブロックかどうかを優先的にチェック
-        if self._is_math_block(lang, code):
-            # 数式ブロックとして処理
+        # 言語名の正規化
+        normalized_language = language.lower().strip()
+        if normalized_language in language_mapping:
+            language = language_mapping[normalized_language]
+        elif normalized_language == '':
+            language = 'plain text'
+        
+        # 数式として処理するかチェック
+        if normalized_language in ('math', 'latex', 'tex'):
             blocks.append({
                 'object': 'block',
                 'type': 'equation',
-                'equation': {'expression': code.strip()}  # 前後の空白を除去
+                'equation': {'expression': content}
             })
-            logging.info(f"数式ブロックを追加しました: {code.strip()[:30]}...")
-            return i + 1
-        
-        # 通常のコードブロックとして処理
-        if len(code) > self.config.max_rich_text_length:
-            self._process_long_code_block(code, lang, blocks)
         else:
             blocks.append({
                 'object': 'block',
                 'type': 'code',
                 'code': {
-                    'language': lang,
-                    'rich_text': [{'type': 'text', 'text': {'content': code}}]
+                    'language': language,
+                    'rich_text': [{'type': 'text', 'text': {'content': content}}]
                 }
             })
         
         return i + 1
     
-    def _determine_code_language(self, info_str: str) -> str:
-        """コードブロックの言語を決定する"""
-        if not info_str:
-            return 'plain text'
-        
-        raw_lang = info_str.split()[0].lower()
-        
-        language_mapping = {
-            'sh': 'bash',
-            'shell': 'bash',
-            'js': 'javascript',
-            'javascript': 'javascript',
-            'math': 'math',
-            'latex': 'latex',
-            'tex': 'latex',  # texもlatexとして扱う
-            'puml': 'plain text',
-            'plantuml': 'plain text',
-            'paul': 'plain text',
-            'gnuplot': 'plain text',
-            'python': 'python',
-            'py': 'python',
-            'java': 'java',
-            'c': 'c',
-            'cpp': 'cpp',
-            'c++': 'cpp',
-            'csharp': 'csharp',
-            'cs': 'csharp',
-            'ruby': 'ruby',
-            'rb': 'ruby',
-            'go': 'go',
-            'rust': 'rust',
-            'rs': 'rust',
-            'html': 'html',
-            'css': 'css',
-            'xml': 'xml',
-            'json': 'json',
-            'yaml': 'yaml',
-            'yml': 'yaml',
-            'sql': 'sql',
-            'r': 'r',
-            'matlab': 'matlab',
-            'swift': 'swift',
-            'kotlin': 'kotlin',
-            'kt': 'kotlin',
-            'php': 'php',
-            'perl': 'perl',
-            'scala': 'scala',
-            'haskell': 'haskell',
-            'hs': 'haskell',
-            'typescript': 'typescript',
-            'ts': 'typescript'
-        }
-        
-        return language_mapping.get(raw_lang, raw_lang)
-    
-    def _is_math_block(self, lang: str, content: str) -> bool:
-        """ブロックが数式かどうかを判定する（より厳密な判定）"""
-        # LaTeX文書の場合は数式ブロックとして扱わない
-        content_stripped = content.strip()
-        
-        # LaTeX文書のパターンをチェック
-        latex_document_indicators = [
-            r'\\documentclass',
-            r'\\usepackage',
-            r'\\begin{document}',
-            r'\\end{document}',
-            r'\\title{',
-            r'\\author{',
-            r'\\maketitle',
-            r'\\section{',
-            r'\\subsection{',
-            r'\\chapter{',
-            r'\\tableofcontents',
-            r'\\bibliography'
-        ]
-        
-        # LaTeX文書の場合はコードブロックとして扱う
-        if any(indicator in content_stripped for indicator in latex_document_indicators):
-            return False
-        
-        # 明示的な数学言語指定（ただし、文書構造でない場合のみ）
-        if lang == 'math':
-            return True
-        
-        # 内容による判定（より厳密に）
-        # LaTeX数式の典型的なパターンをチェック
-        math_indicators = [
-            # 数式環境
-            r'\\begin{equation',
-            r'\\begin{align',
-            r'\\begin{gather',
-            r'\\begin{matrix',
-            r'\\begin{pmatrix',
-            r'\\begin{bmatrix',
-            r'\\begin{cases',
-            # 数式コマンド
-            r'\\frac{',
-            r'\\sum',
-            r'\\int',
-            r'\\lim',
-            r'\\prod',
-            # 演算子
-            r'\\nabla',
-            r'\\partial',
-            # ギリシャ文字（よく使われるもの）
-            r'\\alpha',
-            r'\\beta',
-            r'\\gamma',
-            r'\\delta',
-            r'\\epsilon',
-            r'\\theta',
-            r'\\lambda',
-            r'\\mu',
-            r'\\pi',
-            r'\\sigma',
-            r'\\phi',
-            r'\\omega',
-            # 括弧
-            r'\\left',
-            r'\\right',
-            # フォント
-            r'\\mathbf',
-            r'\\mathcal',
-            r'\\mathrm',
-            # 演算記号
-            r'\\cdot',
-            r'\\times',
-            r'\\div',
-            # 集合記号
-            r'\\cap',
-            r'\\cup',
-            r'\\subset',
-            r'\\in',
-            # 論理記号
-            r'\\forall',
-            r'\\exists',
-            r'\\Rightarrow'
-        ]
-        
-        # 複数の数式パターンが含まれている場合により確実
-        pattern_count = sum(1 for pattern in math_indicators if pattern in content_stripped)
-        
-        # 3つ以上の数式パターンがある場合（より厳密に）
-        if pattern_count >= 3:
-            return True
-        
-        # 明確な数式環境の場合
-        math_env_patterns = [
-            r'\\begin{equation',
-            r'\\begin{align',
-            r'\\begin{gather',
-            r'\\begin{matrix',
-            r'\\begin{pmatrix',
-            r'\\begin{bmatrix'
-        ]
-        if any(pattern in content_stripped for pattern in math_env_patterns):
-            return True
-        
-        return False
-    
-    def _process_long_code_block(self, code: str, lang: str, blocks: List[Dict]):
-        """長いコードブロックを分割して処理する"""
-        logging.info(f"長いコードブロックを分割します (長さ: {len(code)}文字)")
-        code_parts = self.parser.split_long_text(code, self.config.max_rich_text_length)
-        
-        for idx, part in enumerate(code_parts):
-            blocks.append({
-                'object': 'block',
-                'type': 'code',
-                'code': {
-                    'language': lang,
-                    'rich_text': [{'type': 'text', 'text': {'content': part}}]
-                }
-            })
-            
-            if idx < len(code_parts) - 1:
-                blocks.append({
-                    'object': 'block',
-                    'type': 'paragraph',
-                    'paragraph': {
-                        'rich_text': [{'type': 'text', 'text': {'content': f"(コードブロック分割 {idx+1}/{len(code_parts)})"}}]
-                    }
-                })
-    
-    def _process_blockquote(self, tokens, i: int, blocks: List[Dict]) -> int:
-        """引用ブロックを処理する"""
-        qt = tokens[i+2].content
-        
-        links_processed = self._process_markdown_links_as_labeled_bookmarks(qt, blocks)
-        
-        if not links_processed:
-            text_parts = self.parser.split_long_text(qt, self.config.max_rich_text_length)
-            for part in text_parts:
-                blocks.append({
-                    'object': 'block',
-                    'type': 'quote',
-                    'quote': {'rich_text': [{'type': 'text', 'text': {'content': part}}]}
-                })
-        
-        return i + 5
-    
-    def _process_markdown_links_as_labeled_bookmarks(self, text: str, blocks: List[Dict]) -> bool:
-        """Markdownのリンクを見出し付きブックマークブロックとして処理する"""
-        links = self.parser.extract_markdown_links(text)
-        
-        if not links:
-            return False
-        
-        for link in links:
-            link_text = link['text']
-            url = link['url']
-            
-            # まず見出しテキストを追加
+    def _process_inline_math(self, text: str, matches, blocks: List[Dict]):
+        """インライン数式を含むテキストを処理"""
+        if not matches:
             blocks.append({
                 'object': 'block',
                 'type': 'paragraph',
-                'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': link_text}}]}
+                'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': text}}]}
+            })
+            return
+        
+        rich_text = []
+        last_end = 0
+        
+        for match in matches:
+            # 数式前のテキスト
+            if match.start() > last_end:
+                rich_text.append({
+                    'type': 'text',
+                    'text': {'content': text[last_end:match.start()]}
+                })
+            
+            # 数式
+            math_content = match.group(1)
+            rich_text.append({
+                'type': 'equation',
+                'equation': {'expression': math_content}
             })
             
-            # 次にURLをブックマークまたは埋め込みとして追加
-            if self.parser.is_video_link(url, self.config.video_domains):
-                blocks.append({'object': 'block', 'type': 'embed', 'embed': {'url': url}})
-            else:
-                blocks.append({'object': 'block', 'type': 'bookmark', 'bookmark': {'url': url}})
+            last_end = match.end()
         
-        return True
+        # 残りのテキスト
+        if last_end < len(text):
+            rich_text.append({
+                'type': 'text',
+                'text': {'content': text[last_end:]}
+            })
+        
+        blocks.append({
+            'object': 'block',
+            'type': 'paragraph',
+            'paragraph': {'rich_text': rich_text}
+        })
     
-    def _validate_blocks(self, blocks: List[Dict]) -> List[Dict]:
-        """ブロックの妥当性を確認する"""
-        valid_blocks = []
-        for idx, block in enumerate(blocks):
-            block_type = block.get('type')
-            if block_type and block.get(block_type) is not None:
-                valid_blocks.append(block)
-            else:
-                logging.warning(f"無効なブロックをスキップします (index {idx}): {block}")
+    def _process_callouts(self, md_text: str) -> str:
+        """Obsidianスタイルのコールアウトを処理"""
+        lines = md_text.split('\n')
+        processed_lines = []
+        i = 0
         
-        return valid_blocks
+        while i < len(lines):
+            line = lines[i]
+            
+            # コールアウトの開始を検出
+            callout_match = re.match(r'>\s*\[!(\w+)\](?:\s*(.*))?', line)
+            if callout_match:
+                callout_type = callout_match.group(1).upper()
+                callout_title = callout_match.group(2) or callout_type.title()
+                
+                # コールアウトの内容を収集
+                callout_content = []
+                i += 1
+                
+                while i < len(lines) and (lines[i].startswith('>') or lines[i].strip() == ''):
+                    content_line = lines[i]
+                    if content_line.startswith('>'):
+                        content_line = content_line[1:].lstrip()
+                    callout_content.append(content_line)
+                    i += 1
+                
+                # コールアウトをMarkdown引用に変換
+                emoji = self.parser.CALLOUT_TYPES.get(callout_type, '📝')
+                processed_lines.append(f'> **{emoji} {callout_title}**')
+                processed_lines.append('>')
+                for content in callout_content:
+                    if content.strip():
+                        processed_lines.append(f'> {content}')
+                    else:
+                        processed_lines.append('>')
+                
+                continue
+            
+            processed_lines.append(line)
+            i += 1
+        
+        return '\n'.join(processed_lines)
+    
+    def _process_text_with_block_math(self, md_text: str, md_dir: Path, blocks: List[Dict]):
+        """テキストを処理してブロック数式を検出"""
+        # ブロック数式のパターン
+        block_math_pattern = r'\$\$\s*(.*?)\s*\$\$'
+        
+        # テキストを分割
+        parts = re.split(block_math_pattern, md_text, flags=re.DOTALL)
+        
+        for i, part in enumerate(parts):
+            if not part.strip():
+                continue
+                
+            if i % 2 == 1:  # 数式部分
+                blocks.append({
+                    'object': 'block',
+                    'type': 'equation',
+                    'equation': {'expression': part.strip()}
+                })
+            else:  # 通常のMarkdown部分
+                # 通常のMarkdown処理
+                tokens = self.md.parse(part)
+                j = 0
+                while j < len(tokens):
+                    token = tokens[j]
+                    t = token.type
+                    
+                    if t == 'heading_open':
+                        j = self._process_heading(tokens, j, blocks)
+                    elif t in ('bullet_list_open', 'ordered_list_open'):
+                        j = self._process_list(tokens, j, blocks)
+                    elif t == 'paragraph_open':
+                        j = self._process_paragraph(tokens, j, blocks, md_dir)
+                    elif t == 'fence':
+                        j = self._process_code_block(tokens, j, blocks)
+                    elif t == 'blockquote_open':
+                        j = self._process_blockquote(tokens, j, blocks)
+                    elif t == 'hr':
+                        blocks.append({'object': 'block', 'type': 'divider', 'divider': {}})
+                        j += 1
+                    else:
+                        j += 1
+    
+    def _process_heading(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """見出しを処理"""
+        token = tokens[i]
+        level = int(token.tag[1])
+        content = tokens[i+1].content
+        
+        heading_type = f"heading_{min(level, 3)}"
+        blocks.append({
+            'object': 'block',
+            'type': heading_type,
+            heading_type: {'rich_text': [{'type': 'text', 'text': {'content': content}}]}
+        })
+        
+        return i + 3
+    
+    def _process_list(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """リストを処理"""
+        list_type = 'numbered_list_item' if tokens[i].type == 'ordered_list_open' else 'bulleted_list_item'
+        i += 1
+        
+        while i < len(tokens) and tokens[i].type not in ('bullet_list_close', 'ordered_list_close'):
+            if tokens[i].type == 'list_item_open':
+                content_idx = i + 2
+                if content_idx < len(tokens):
+                    txt = tokens[content_idx].content
+                    blocks.append({
+                        'object': 'block',
+                        'type': list_type,
+                        list_type: {'rich_text': [{'type': 'text', 'text': {'content': txt}}]}
+                    })
+                i += 5
+            else:
+                i += 1
+        
+        return i + 1
+    
+    def _process_paragraph(self, tokens, i: int, blocks: List[Dict], md_dir: Path) -> int:
+        """段落を処理"""
+        if i + 1 < len(tokens):
+            txt = tokens[i+1].content.strip()
+            if txt:
+                # 画像の処理
+                img_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+                img_match = re.search(img_pattern, txt)
+                
+                if img_match:
+                    alt_text = img_match.group(1)
+                    img_path = img_match.group(2)
+                    
+                    # 相対パスを絶対パスに変換
+                    if not img_path.startswith(('http://', 'https://')):
+                        full_img_path = md_dir / img_path
+                        img_url = self.image_uploader.get_image_url(full_img_path)
+                    else:
+                        img_url = img_path
+                    
+                    blocks.append({
+                        'object': 'block',
+                        'type': 'image',
+                        'image': {'external': {'url': img_url}}
+                    })
+                else:
+                    # インライン数式のパターン
+                    inline_math_pattern = r'\$([^$\n]+)\$'
+                    inline_math_matches = list(re.finditer(inline_math_pattern, txt))
+                    
+                    if inline_math_matches:
+                        self._process_inline_math(txt, inline_math_matches, blocks)
+                    else:
+                        blocks.append({
+                            'object': 'block',
+                            'type': 'paragraph',
+                            'paragraph': {'rich_text': [{'type': 'text', 'text': {'content': txt}}]}
+                        })
+        
+        return i + 2
+    
+    def _process_blockquote(self, tokens, i: int, blocks: List[Dict]) -> int:
+        """引用ブロックを処理"""
+        i += 1
+        content_lines = []
+        
+        while i < len(tokens) and tokens[i].type != 'blockquote_close':
+            if tokens[i].type == 'paragraph_open':
+                if i + 1 < len(tokens):
+                    content_lines.append(tokens[i+1].content)
+                i += 2
+            i += 1
+        
+        if content_lines:
+            content = '\n'.join(content_lines)
+            blocks.append({
+                'object': 'block',
+                'type': 'quote',
+                'quote': {'rich_text': [{'type': 'text', 'text': {'content': content}}]}
+            })
+        
+        return i + 1
+    
+    def _validate_blocks(self, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """ブロックを検証して制限に準拠させる"""
+        validated_blocks = []
+        
+        for block in blocks:
+            # ブロック数の制限チェック
+            if len(validated_blocks) >= self.config.max_blocks_per_page:
+                logging.warning(f"ブロック数が制限({self.config.max_blocks_per_page})に達しました")
+                break
+            
+            # rich_textの長さ制限チェック
+            self._validate_rich_text_length(block)
+            
+            # トグルブロックの子要素も検証
+            if block.get('type') == 'toggle' and 'toggle' in block and 'children' in block['toggle']:
+                children = block['toggle']['children']
+                validated_children = []
+                
+                for child in children:
+                    if len(validated_children) < 50:  # トグル内の子要素制限
+                        self._validate_rich_text_length(child)
+                        validated_children.append(child)
+                    else:
+                        logging.warning("トグル内の子要素が制限に達しました")
+                        break
+                
+                block['toggle']['children'] = validated_children
+            
+            validated_blocks.append(block)
+        
+        return validated_blocks
+    
+    def _validate_rich_text_length(self, block: Dict[str, Any]):
+        """rich_textの長さを制限内に収める"""
+        if 'paragraph' in block:
+            self._truncate_rich_text(block['paragraph'])
+        elif 'heading_1' in block:
+            self._truncate_rich_text(block['heading_1'])
+        elif 'heading_2' in block:
+            self._truncate_rich_text(block['heading_2'])
+        elif 'heading_3' in block:
+            self._truncate_rich_text(block['heading_3'])
+        elif 'quote' in block:
+            self._truncate_rich_text(block['quote'])
+        elif 'bulleted_list_item' in block:
+            self._truncate_rich_text(block['bulleted_list_item'])
+        elif 'numbered_list_item' in block:
+            self._truncate_rich_text(block['numbered_list_item'])
+        elif 'toggle' in block:
+            self._truncate_rich_text(block['toggle'])
+        elif 'callout' in block:
+            self._truncate_rich_text(block['callout'])
+    
+    def _truncate_rich_text(self, block_content: Dict[str, Any]):
+        """rich_textを制限内に切り詰める"""
+        if 'rich_text' in block_content:
+            rich_text_list = block_content['rich_text']
+            total_length = 0
+            truncated_rich_text = []
+            
+            for rt in rich_text_list:
+                if rt.get('type') == 'text':
+                    text_content = rt['text']['content']
+                    remaining_length = self.config.max_rich_text_length - total_length
+                    
+                    if len(text_content) <= remaining_length:
+                        truncated_rich_text.append(rt)
+                        total_length += len(text_content)
+                    else:
+                        # 切り詰める
+                        truncated_text = text_content[:remaining_length - 3] + '...'
+                        rt['text']['content'] = truncated_text
+                        truncated_rich_text.append(rt)
+                        break
+                else:
+                    truncated_rich_text.append(rt)
+            
+            block_content['rich_text'] = truncated_rich_text
