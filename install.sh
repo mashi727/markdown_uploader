@@ -163,8 +163,8 @@ def show_config():
     except Exception as e:
         print(f"設定の読み込みに失敗しました: {e}")
         print("\n設定ファイルを作成してください:")
-        print("  echo 'YOUR_DATABASE_ID' > ~/.config/.terminal_memo_id")
-        print("  echo 'YOUR_API_TOKEN' > ~/.config/.terminal_memo_token")
+        print("  echo 'YOUR_DATABASE_ID' > ~/.token/notion/.terminal_memo_id")
+        print("  echo 'YOUR_API_TOKEN' > ~/.token/notion/.terminal_memo_token")
 
 
 def main():
@@ -239,8 +239,8 @@ echo "=== インストール完了 ==="
 echo ""
 echo "次のステップ:"
 echo "1. Notion設定ファイルを作成してください:"
-echo "   echo 'YOUR_DATABASE_ID' > ~/.config/.terminal_memo_id"
-echo "   echo 'YOUR_API_TOKEN' > ~/.config/.terminal_memo_token"
+echo "   echo 'YOUR_DATABASE_ID' > ~/.token/notion/.terminal_memo_id"
+echo "   echo 'YOUR_API_TOKEN' > ~/.token/notion/.terminal_memo_token"
 echo ""
 echo "2. 必要に応じて画像アップロード設定:"
 echo "   export FTP_USER='your_username'"

@@ -23,8 +23,8 @@ pip install -r requirements.txt
 
 以下のファイルを作成してください：
 
-- `~/.config/.terminal_memo_id`: NotionデータベースID
-- `~/.config/.terminal_memo_token`: Notion APIトークン
+- `~/.token/notion/.terminal_memo_id`: NotionデータベースID
+- `~/.token/notion/.terminal_memo_token`: Notion APIトークン
 
 ### 2. 画像アップロード設定（オプション）
 

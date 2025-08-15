@@ -35,8 +35,8 @@ def parse_arguments():
   mdupload --config              # 設定を表示
   
 設定ファイル:
-  ~/.config/.terminal_memo_id     # NotionデータベースID
-  ~/.config/.terminal_memo_token  # Notion APIトークン
+  ~/.token/notion/.terminal_memo_id     # NotionデータベースID
+  ~/.token/notion/.terminal_memo_token  # Notion APIトークン
   
 環境変数（オプション）:
   FTP_USER, FTP_PASS             # FTPサーバー設定
@@ -79,7 +79,7 @@ def parse_arguments():
 
 def show_config():
     """現在の設定を表示"""
-    config_dir = Path.home() / ".config"
+    config_dir = Path.home() / ".token/notion"
     db_id_file = config_dir / ".terminal_memo_id"
     token_file = config_dir / ".terminal_memo_token"
     
@@ -126,7 +126,7 @@ def show_config():
 
 def check_config():
     """設定ファイルの存在を確認"""
-    config_dir = Path.home() / ".config"
+    config_dir = Path.home() / ".token/notion"
     db_id_file = config_dir / ".terminal_memo_id"
     token_file = config_dir / ".terminal_memo_token"
     

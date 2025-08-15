@@ -43,7 +43,7 @@ class Config:
     
     def _load_notion_config(self):
         """Notion設定を読み込む"""
-        config_dir = Path("~/.config").expanduser()
+        config_dir = Path("~/.token/notion").expanduser()
         
         try:
             self.database_id = (config_dir / ".terminal_memo_id").read_text(encoding='utf-8').strip()

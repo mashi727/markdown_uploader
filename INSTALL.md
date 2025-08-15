@@ -43,10 +43,10 @@ pip install -e .
 mkdir -p ~/.config
 
 # NotionデータベースIDを設定
-echo "YOUR_NOTION_DATABASE_ID" > ~/.config/.terminal_memo_id
+echo "YOUR_NOTION_DATABASE_ID" > ~/.token/notion/.terminal_memo_id
 
 # Notion APIトークンを設定
-echo "YOUR_NOTION_API_TOKEN" > ~/.config/.terminal_memo_token
+echo "YOUR_NOTION_API_TOKEN" > ~/.token/notion/.terminal_memo_token
 ```
 
 ### 2. 環境変数の設定（オプション）
